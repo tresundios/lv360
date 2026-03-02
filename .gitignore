@@ -1,0 +1,52 @@
+# ==========================================================================
+# Root .gitignore — LamViec 360 Monorepo
+# ==========================================================================
+
+# --- Node ---
+node_modules/
+dist/
+build/
+.cache/
+storybook-static/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+venv/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Environment ---
+.env
+.env.*
+!env/.env.example
+env/.env.local
+env/.env.dev
+env/.env.qa
+env/.env.uat
+env/.env.prod
+
+# --- Docker ---
+*.log
+
+# --- IDE ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Misc ---
+*.local

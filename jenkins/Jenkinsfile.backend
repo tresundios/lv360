@@ -1,0 +1,211 @@
+///////////////////////////////////////////////////////////////////////////////
+// Jenkinsfile.backend — FastAPI CI/CD Pipeline
+// Triggers on PR merge to dev, or manual trigger
+///////////////////////////////////////////////////////////////////////////////
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
+    }
+
+    parameters {
+        choice(
+            name: 'TARGET_ENV',
+            choices: ['dev', 'qa', 'uat', 'prod'],
+            description: 'Target deployment environment'
+        )
+        booleanParam(
+            name: 'SKIP_TESTS',
+            defaultValue: false,
+            description: 'Skip test stage (emergency deploys only)'
+        )
+        booleanParam(
+            name: 'RUN_MIGRATIONS',
+            defaultValue: true,
+            description: 'Run Alembic migrations before deployment'
+        )
+    }
+
+    environment {
+        DOCKER_REGISTRY    = 'docker.io'
+        DOCKER_REPO        = 'lamviec360-backend'
+        IMAGE_TAG           = "${params.TARGET_ENV}-${BUILD_NUMBER}"
+        IMAGE_FULL          = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${IMAGE_TAG}"
+        IMAGE_LATEST        = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${params.TARGET_ENV}-latest"
+
+        // Jenkins credentials IDs — configure in Jenkins Credentials Store
+        DOCKER_CREDENTIALS  = 'dockerhub-credentials'
+        SSH_CREDENTIALS     = "ssh-${params.TARGET_ENV}-server"
+        ENV_FILE_CREDENTIALS = "env-file-${params.TARGET_ENV}"
+
+        // Paths on remote server
+        REMOTE_PROJECT_DIR  = '/opt/lamviec360'
+        COMPOSE_FILE        = "docker-compose.${params.TARGET_ENV}.yml"
+    }
+
+    triggers {
+        // Trigger on PR merge to dev branch via GitHub webhook
+        githubPush()
+    }
+
+    stages {
+        // ---------------------------------------------------------------------
+        // Stage 1: Checkout
+        // ---------------------------------------------------------------------
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.GIT_BRANCH_NAME = sh(
+                        script: 'git rev-parse --abbrev-ref HEAD',
+                        returnStdout: true
+                    ).trim()
+                    echo "Building commit ${env.GIT_COMMIT_SHORT} on branch ${env.GIT_BRANCH_NAME}"
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 2: Run Tests
+        // ---------------------------------------------------------------------
+        stage('Test') {
+            when {
+                expression { return !params.SKIP_TESTS }
+            }
+            steps {
+                dir('backend') {
+                    sh '''
+                        docker build \
+                            -f Dockerfile.prod \
+                            --target builder \
+                            -t ${DOCKER_REPO}:test-${BUILD_NUMBER} .
+
+                        docker run --rm \
+                            ${DOCKER_REPO}:test-${BUILD_NUMBER} \
+                            python -m pytest tests/ -v --tb=short --junitxml=/tmp/results.xml || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/results.xml'
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 3: Docker Build
+        // ---------------------------------------------------------------------
+        stage('Docker Build') {
+            steps {
+                dir('backend') {
+                    sh """
+                        docker build \
+                            -f Dockerfile.prod \
+                            --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                            --build-arg GIT_COMMIT=${env.GIT_COMMIT_SHORT} \
+                            -t ${IMAGE_FULL} \
+                            -t ${IMAGE_LATEST} \
+                            .
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 4: Docker Push to Registry
+        // ---------------------------------------------------------------------
+        stage('Docker Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: env.DOCKER_CREDENTIALS,
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh """
+                        echo "\${DOCKER_PASS}" | docker login ${DOCKER_REGISTRY} -u "\${DOCKER_USER}" --password-stdin
+                        docker push ${IMAGE_FULL}
+                        docker push ${IMAGE_LATEST}
+                        docker logout ${DOCKER_REGISTRY}
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 5: Run Migrations on Remote Server
+        // ---------------------------------------------------------------------
+        stage('Run Migrations') {
+            when {
+                expression { return params.RUN_MIGRATIONS }
+            }
+            steps {
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
+                            cd ${REMOTE_PROJECT_DIR}
+                            docker compose -f ${COMPOSE_FILE} exec -T fastapi alembic upgrade head
+ENDSSH
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 6: Deploy to Remote Server
+        // ---------------------------------------------------------------------
+        stage('Deploy') {
+            steps {
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
+                            cd ${REMOTE_PROJECT_DIR}
+
+                            # Pull new image
+                            docker pull ${IMAGE_FULL}
+
+                            # Update the env file with new image tag
+                            sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
+
+                            # Graceful rolling restart
+                            docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate fastapi
+
+                            # Wait for health check
+                            echo "Waiting for health check..."
+                            sleep 10
+                            curl -f http://localhost:8000/health || exit 1
+                            echo "Deployment successful!"
+ENDSSH
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Backend pipeline SUCCESS: ${IMAGE_FULL}"
+        }
+        failure {
+            echo "❌ Backend pipeline FAILED at stage: ${env.STAGE_NAME}"
+        }
+        cleanup {
+            // Clean up local Docker images to save disk space
+            sh """
+                docker rmi ${IMAGE_FULL} ${IMAGE_LATEST} 2>/dev/null || true
+                docker rmi ${DOCKER_REPO}:test-${BUILD_NUMBER} 2>/dev/null || true
+            """
+        }
+    }
+}

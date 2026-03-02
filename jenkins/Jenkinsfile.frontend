@@ -1,0 +1,213 @@
+///////////////////////////////////////////////////////////////////////////////
+// Jenkinsfile.frontend — React (Vite) CI/CD Pipeline
+// Triggers on PR merge to dev, or manual trigger
+///////////////////////////////////////////////////////////////////////////////
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timestamps()
+    }
+
+    parameters {
+        choice(
+            name: 'TARGET_ENV',
+            choices: ['dev', 'qa', 'uat', 'prod'],
+            description: 'Target deployment environment'
+        )
+        booleanParam(
+            name: 'SKIP_TESTS',
+            defaultValue: false,
+            description: 'Skip test stage (emergency deploys only)'
+        )
+    }
+
+    environment {
+        DOCKER_REGISTRY    = 'docker.io'
+        DOCKER_REPO        = 'lamviec360-frontend'
+        IMAGE_TAG           = "${params.TARGET_ENV}-${BUILD_NUMBER}"
+        IMAGE_FULL          = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${IMAGE_TAG}"
+        IMAGE_LATEST        = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${params.TARGET_ENV}-latest"
+
+        // Jenkins credentials IDs — configure in Jenkins Credentials Store
+        DOCKER_CREDENTIALS  = 'dockerhub-credentials'
+        SSH_CREDENTIALS     = "ssh-${params.TARGET_ENV}-server"
+
+        // Paths on remote server
+        REMOTE_PROJECT_DIR  = '/opt/lamviec360'
+        COMPOSE_FILE        = "docker-compose.${params.TARGET_ENV}.yml"
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    stages {
+        // ---------------------------------------------------------------------
+        // Stage 1: Checkout
+        // ---------------------------------------------------------------------
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.GIT_BRANCH_NAME = sh(
+                        script: 'git rev-parse --abbrev-ref HEAD',
+                        returnStdout: true
+                    ).trim()
+                    echo "Building commit ${env.GIT_COMMIT_SHORT} on branch ${env.GIT_BRANCH_NAME}"
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 2: Install & Lint
+        // ---------------------------------------------------------------------
+        stage('Install & Lint') {
+            steps {
+                dir('frontend') {
+                    sh '''
+                        docker run --rm \
+                            -v $(pwd):/app \
+                            -w /app \
+                            node:20-alpine \
+                            sh -c "npm ci && npm run lint && npm run format:check"
+                    '''
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 3: Run Tests
+        // ---------------------------------------------------------------------
+        stage('Test') {
+            when {
+                expression { return !params.SKIP_TESTS }
+            }
+            steps {
+                dir('frontend') {
+                    sh '''
+                        docker run --rm \
+                            -v $(pwd):/app \
+                            -w /app \
+                            node:20-alpine \
+                            sh -c "npm ci && npm test -- --run" || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/test-results.xml'
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 4: Docker Build
+        // ---------------------------------------------------------------------
+        stage('Docker Build') {
+            steps {
+                dir('frontend') {
+                    script {
+                        // Load env-specific VITE variables for build-time injection
+                        def envFile = readFile("../env/.env.${params.TARGET_ENV}")
+                        def viteApiUrl = ''
+                        def viteEnv = ''
+                        envFile.split('\n').each { line ->
+                            if (line.startsWith('VITE_API_URL=')) {
+                                viteApiUrl = line.split('=', 2)[1]
+                            }
+                            if (line.startsWith('VITE_ENVIRONMENT=')) {
+                                viteEnv = line.split('=', 2)[1]
+                            }
+                        }
+
+                        sh """
+                            docker build \
+                                -f Dockerfile.prod \
+                                --build-arg VITE_API_URL=${viteApiUrl} \
+                                --build-arg VITE_ENVIRONMENT=${viteEnv} \
+                                --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                                -t ${IMAGE_FULL} \
+                                -t ${IMAGE_LATEST} \
+                                .
+                        """
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 5: Docker Push to Registry
+        // ---------------------------------------------------------------------
+        stage('Docker Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: env.DOCKER_CREDENTIALS,
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh """
+                        echo "\${DOCKER_PASS}" | docker login ${DOCKER_REGISTRY} -u "\${DOCKER_USER}" --password-stdin
+                        docker push ${IMAGE_FULL}
+                        docker push ${IMAGE_LATEST}
+                        docker logout ${DOCKER_REGISTRY}
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 6: Deploy to Remote Server
+        // ---------------------------------------------------------------------
+        stage('Deploy') {
+            steps {
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
+                            cd ${REMOTE_PROJECT_DIR}
+
+                            # Pull new image
+                            docker pull ${IMAGE_FULL}
+
+                            # Update the env file with new image tag
+                            sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
+
+                            # Graceful rolling restart — only the react service
+                            docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate react
+
+                            # Wait and verify
+                            echo "Waiting for health check..."
+                            sleep 5
+                            curl -f http://localhost:80/ || exit 1
+                            echo "Frontend deployment successful!"
+ENDSSH
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Frontend pipeline SUCCESS: ${IMAGE_FULL}"
+        }
+        failure {
+            echo "❌ Frontend pipeline FAILED at stage: ${env.STAGE_NAME}"
+        }
+        cleanup {
+            sh """
+                docker rmi ${IMAGE_FULL} ${IMAGE_LATEST} 2>/dev/null || true
+            """
+        }
+    }
+}

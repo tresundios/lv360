@@ -1,0 +1,140 @@
+###############################################################################
+# docker-compose.dev.yml — Development Server Deployment
+# Uses pre-built images from Docker Hub (pushed by Jenkins)
+###############################################################################
+
+services:
+  # -------------------------------------------------------------------------
+  # FastAPI Backend
+  # -------------------------------------------------------------------------
+  fastapi:
+    image: docker.io/lamviec360-backend:${DOCKER_IMAGE_TAG:-dev-latest}
+    container_name: lv360_fastapi_dev
+    restart: always
+    env_file:
+      - ./env/.env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - lv360-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # -------------------------------------------------------------------------
+  # React Frontend (nginx serving built assets)
+  # -------------------------------------------------------------------------
+  react:
+    image: docker.io/lamviec360-frontend:${DOCKER_IMAGE_TAG:-dev-latest}
+    container_name: lv360_react_dev
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - fastapi
+    networks:
+      - lv360-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL — persistent docker volume
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: lv360_postgres_dev
+    restart: always
+    env_file:
+      - ./env/.env.dev
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lamviec360_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-lv360_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Kolkata
+    volumes:
+      - lv360_pgdata_dev:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - lv360-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lv360_dev} -d ${POSTGRES_DB:-lamviec360_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # -------------------------------------------------------------------------
+  # Redis
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: lv360_redis_dev
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - lv360_redisdata_dev:/data
+    networks:
+      - lv360-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # PG Backup (cron-based)
+  # -------------------------------------------------------------------------
+  pg-backup:
+    image: postgres:15-alpine
+    container_name: lv360_pgbackup_dev
+    restart: always
+    env_file:
+      - ./env/.env.dev
+    environment:
+      TZ: Asia/Kolkata
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /data/postgres-backups-dev:/backups
+      - ./backend/scripts/backup.sh:/backup.sh:ro
+    entrypoint: ["/bin/bash", "/backup.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lv360-network
+
+networks:
+  lv360-network:
+    driver: bridge
+    name: lv360-network-dev
+
+volumes:
+  lv360_pgdata_dev:
+    driver: local
+    name: lv360_pgdata_dev
+  lv360_redisdata_dev:
+    driver: local
+    name: lv360_redisdata_dev

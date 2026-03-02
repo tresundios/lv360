@@ -1,0 +1,93 @@
+###############################################################################
+# docker-compose.prod.yml — Production Environment Deployment
+# Future-ready: designed to migrate to Kubernetes / managed services
+# DB and Redis expected to be managed (RDS, ElastiCache, etc.)
+###############################################################################
+
+services:
+  fastapi:
+    image: docker.io/lamviec360-backend:${DOCKER_IMAGE_TAG:-prod-latest}
+    container_name: lv360_fastapi_prod
+    restart: always
+    env_file:
+      - ./env/.env.prod
+    environment:
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "8000:8000"
+    networks:
+      - lv360-network
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  react:
+    image: docker.io/lamviec360-frontend:${DOCKER_IMAGE_TAG:-prod-latest}
+    container_name: lv360_react_prod
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - fastapi
+    networks:
+      - lv360-network
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # NOTE: In production, Postgres and Redis should be MANAGED SERVICES:
+  #   - AWS RDS / GCP Cloud SQL / Azure Flexible Server
+  #   - AWS ElastiCache / GCP Memorystore / Azure Cache
+  #
+  # The services below are placeholders. Remove them when switching to managed.
+  # Inject DATABASE_URL and REDIS_URL via env/.env.prod or CI secrets.
+  # ---------------------------------------------------------------------------
+
+networks:
+  lv360-network:
+    driver: bridge
+    name: lv360-network-prod

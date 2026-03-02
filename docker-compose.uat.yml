@@ -1,0 +1,104 @@
+###############################################################################
+# docker-compose.uat.yml — UAT Environment Deployment
+# Separate DB per environment, pre-built images from Docker Hub
+###############################################################################
+
+services:
+  fastapi:
+    image: docker.io/lamviec360-backend:${DOCKER_IMAGE_TAG:-uat-latest}
+    container_name: lv360_fastapi_uat
+    restart: always
+    env_file:
+      - ./env/.env.uat
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - lv360-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  react:
+    image: docker.io/lamviec360-frontend:${DOCKER_IMAGE_TAG:-uat-latest}
+    container_name: lv360_react_uat
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - fastapi
+    networks:
+      - lv360-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: lv360_postgres_uat
+    restart: always
+    env_file:
+      - ./env/.env.uat
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lamviec360_uat}
+      POSTGRES_USER: ${POSTGRES_USER:-lv360_uat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Kolkata
+    volumes:
+      - lv360_pgdata_uat:/var/lib/postgresql/data
+    networks:
+      - lv360-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lv360_uat} -d ${POSTGRES_DB:-lamviec360_uat}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+
+  redis:
+    image: redis:7-alpine
+    container_name: lv360_redis_uat
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - lv360_redisdata_uat:/data
+    networks:
+      - lv360-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  lv360-network:
+    driver: bridge
+    name: lv360-network-uat
+
+volumes:
+  lv360_pgdata_uat:
+    driver: local
+    name: lv360_pgdata_uat
+  lv360_redisdata_uat:
+    driver: local
+    name: lv360_redisdata_uat

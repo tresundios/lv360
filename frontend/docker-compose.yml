@@ -1,0 +1,7 @@
+services:
+  build-fe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - /var/www/frontend:/output

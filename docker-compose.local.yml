@@ -1,0 +1,137 @@
+###############################################################################
+# docker-compose.local.yml — Local Development Stack
+# Usage: docker compose -f docker-compose.local.yml up --build
+###############################################################################
+
+services:
+  # -------------------------------------------------------------------------
+  # FastAPI Backend
+  # -------------------------------------------------------------------------
+  fastapi:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lv360_fastapi
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.local
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./backend/app:/code/app:delegated
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - lv360-network
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /code/app
+
+  # -------------------------------------------------------------------------
+  # React Frontend (Vite dev server)
+  # -------------------------------------------------------------------------
+  react:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: lv360_react
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.local
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_ENVIRONMENT: local
+    volumes:
+      - ./frontend/src:/app/src:delegated
+      - ./frontend/public:/app/public:delegated
+      - ./frontend/index.html:/app/index.html:delegated
+      - ./frontend/vite.config.ts:/app/vite.config.ts:delegated
+      - fe_node_modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - fastapi
+    networks:
+      - lv360-network
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: lv360_postgres
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.local
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lamviec360}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev123}
+      TZ: Asia/Kolkata
+    volumes:
+      - lv360_pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - lv360-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-lamviec360}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Redis
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: lv360_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - lv360_redisdata:/data
+    networks:
+      - lv360-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  lv360-network:
+    driver: bridge
+    name: lv360-network
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  lv360_pgdata:
+    driver: local
+    name: lv360_pgdata
+  lv360_redisdata:
+    driver: local
+    name: lv360_redisdata
+  fe_node_modules:
+    driver: local
+    name: lv360_fe_node_modules
