@@ -28,7 +28,7 @@ pipeline {
 
     environment {
         DOCKER_REGISTRY    = 'docker.io'
-        DOCKER_REPO        = 'lamviec360-frontend'
+        DOCKER_REPO        = 'navistresundios/lamviec360-frontend'
         IMAGE_TAG           = "${params.TARGET_ENV}-${BUILD_NUMBER}"
         IMAGE_FULL          = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${IMAGE_TAG}"
         IMAGE_LATEST        = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${params.TARGET_ENV}-latest"
@@ -36,6 +36,12 @@ pipeline {
         // Jenkins credentials IDs — configure in Jenkins Credentials Store
         DOCKER_CREDENTIALS  = 'dockerhub-credentials'
         SSH_CREDENTIALS     = "ssh-${params.TARGET_ENV}-server"
+
+        // Deploy hosts per environment
+        DEPLOY_HOST_dev     = '103.175.146.37'
+        DEPLOY_HOST_qa      = '${QA_SERVER_IP}'     // TODO: set when QA server is provisioned
+        DEPLOY_HOST_uat     = '${UAT_SERVER_IP}'    // TODO: set when UAT server is provisioned
+        DEPLOY_HOST_prod    = '${PROD_SERVER_IP}'   // TODO: set when prod server is provisioned
 
         // Paths on remote server
         REMOTE_PROJECT_DIR  = '/opt/lamviec360'
@@ -173,6 +179,7 @@ pipeline {
             steps {
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
+                        DEPLOY_HOST=\$(eval echo \${DEPLOY_HOST_${params.TARGET_ENV}})
                         ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
                             cd ${REMOTE_PROJECT_DIR}
 
