@@ -12,8 +12,8 @@ echo "=== LamViec 360 — Git Repository Setup ==="
 rm -rf backend/.git
 rm -rf frontend/.git
 
-# Initialize root-level git
-git init
+# Initialize root-level git with 'main' as default branch
+git init -b main
 
 # Initial commit
 git add .
