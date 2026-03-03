@@ -10,9 +10,10 @@ export function HomePage() {
         React + Vite + Tailwind + shadcn/ui + React Router
       </p>
       <div className="flex gap-4">
-        <Button>Get started</Button>
+        <Button>Get started Navis</Button>
         <Button variant="outline" asChild>
           <Link to="/about">Learn more</Link>
+         
         </Button>
       </div>
     </Content>
