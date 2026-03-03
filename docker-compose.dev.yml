@@ -43,7 +43,7 @@ services:
     container_name: lv360_react_dev
     restart: always
     ports:
-      - "80:80"
+      - "3080:80"
     depends_on:
       - fastapi
     networks:
