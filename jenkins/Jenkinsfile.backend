@@ -150,7 +150,39 @@ pipeline {
         }
 
         // ---------------------------------------------------------------------
-        // Stage 5: Run Migrations on Remote Server
+        // Stage 5: Deploy to Remote Server
+        // ---------------------------------------------------------------------
+        stage('Deploy') {
+            steps {
+                sshagent(credentials: [env.SSH_CREDENTIALS]) {
+                    sh """
+                        DEPLOY_HOST=\$(eval echo \${DEPLOY_HOST_${params.TARGET_ENV}})
+                        ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
+                            cd ${REMOTE_PROJECT_DIR}
+
+                            # Pull new image
+                            docker pull ${IMAGE_FULL}
+
+                            # Update the env file with new image tag
+                            sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
+
+                            # Ensure all supporting services are running (postgres, redis, etc.)
+                            docker compose -f ${COMPOSE_FILE} up -d
+
+                            # Force recreate fastapi with the new image
+                            docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate fastapi
+
+                            # Wait for container to be ready
+                            echo "Waiting for container to start..."
+                            sleep 15
+ENDSSH
+                    """
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Stage 6: Run Migrations on Remote Server
         // ---------------------------------------------------------------------
         stage('Run Migrations') {
             when {
@@ -170,28 +202,14 @@ ENDSSH
         }
 
         // ---------------------------------------------------------------------
-        // Stage 6: Deploy to Remote Server
+        // Stage 7: Health Check
         // ---------------------------------------------------------------------
-        stage('Deploy') {
+        stage('Health Check') {
             steps {
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
                         DEPLOY_HOST=\$(eval echo \${DEPLOY_HOST_${params.TARGET_ENV}})
                         ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
-                            cd ${REMOTE_PROJECT_DIR}
-
-                            # Pull new image
-                            docker pull ${IMAGE_FULL}
-
-                            # Update the env file with new image tag
-                            sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
-
-                            # Graceful rolling restart
-                            docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate fastapi
-
-                            # Wait for health check
-                            echo "Waiting for health check..."
-                            sleep 10
                             curl -f http://localhost:8000/health || exit 1
                             echo "Deployment successful!"
 ENDSSH
