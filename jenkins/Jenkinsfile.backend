@@ -166,11 +166,15 @@ pipeline {
                             # Update the env file with new image tag
                             sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
 
-                            # Ensure all supporting services are running (postgres, redis, etc.)
-                            docker compose -f ${COMPOSE_FILE} up -d
+                            # Stop existing containers to free ports
+                            docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
 
-                            # Force recreate fastapi with the new image
-                            docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate fastapi
+                            # Start supporting services (postgres, redis) then backend
+                            docker compose -f ${COMPOSE_FILE} up -d postgres redis
+                            sleep 5
+
+                            # Start fastapi with the new image
+                            docker compose -f ${COMPOSE_FILE} up -d fastapi
 
                             # Wait for container to be ready
                             echo "Waiting for container to start..."
