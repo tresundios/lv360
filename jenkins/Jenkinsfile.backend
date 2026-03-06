@@ -92,7 +92,6 @@ pipeline {
                     sh '''
                         docker build \
                             -f Dockerfile.prod \
-                            --target builder \
                             -t ${DOCKER_REPO}:test-${BUILD_NUMBER} .
 
                         docker run --rm \
