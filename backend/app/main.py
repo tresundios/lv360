@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from fastapi.openapi.docs import get_redoc_html
 from app.crud import create_task, delete_task, get_task, get_tasks, update_task
 from app.database import Base, SessionLocal, engine, get_db, wait_for_db
 from app.models import HelloWorld
@@ -46,8 +47,17 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",
-    redoc_url="/redoc",
+    redoc_url=None,
 )
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_html():
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - ReDoc",
+        redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js",
+    )
 
 app.add_middleware(
     CORSMiddleware,
