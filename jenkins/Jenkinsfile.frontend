@@ -134,7 +134,7 @@ DOCKERFILE
             steps {
                 dir('frontend') {
                     sh '''
-                        docker run --rm lv360-frontend-lint:${BUILD_NUMBER} npx vitest --run || true
+                        docker run --rm lv360-frontend-lint:${BUILD_NUMBER} npm run test:ci
                     '''
                 }
             }
