@@ -95,6 +95,7 @@ pipeline {
                             -t ${DOCKER_REPO}:test-${BUILD_NUMBER} .
 
                         docker run --rm \
+                            --entrypoint "" \
                             ${DOCKER_REPO}:test-${BUILD_NUMBER} \
                             python -m pytest tests/ -v --tb=short --junitxml=/tmp/results.xml || true
                     '''
