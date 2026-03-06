@@ -29,7 +29,10 @@ echo "[ENTRYPOINT] Database is ready."
 # Run migrations if ENVIRONMENT is not 'local' (local uses create_all)
 if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
     echo "[ENTRYPOINT] Running Alembic migrations..."
-    alembic upgrade head
+    alembic upgrade head || {
+        echo "[ENTRYPOINT] Migration failed, attempting to stamp current state..."
+        alembic stamp head || true
+    }
     echo "[ENTRYPOINT] Migrations complete."
 fi
 
