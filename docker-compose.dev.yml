@@ -39,7 +39,7 @@ services:
   # React Frontend (nginx serving built assets)
   # -------------------------------------------------------------------------
   react:
-    image: docker.io/navistresundios/lamviec360-frontend:${DOCKER_IMAGE_TAG:-dev-latest}
+    image: docker.io/navistresundios/lamviec360-frontend:dev-latest
     container_name: lv360_react_dev
     restart: always
     ports:
