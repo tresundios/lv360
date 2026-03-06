@@ -285,6 +285,16 @@ ENDSSH
                     sh """
                         DEPLOY_HOST=\$(eval echo \${DEPLOY_HOST_${params.TARGET_ENV}})
                         ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
+                            cd ${REMOTE_PROJECT_DIR}
+                            # Check container logs for debugging
+                            echo "Checking FastAPI container logs..."
+                            docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} logs --tail=50 fastapi
+                            
+                            # Wait a bit more for app to fully start
+                            echo "Waiting for application to be ready..."
+                            sleep 10
+                            
+                            # Try health check
                             curl -f http://localhost:8000/health || exit 1
                             echo "Deployment successful!"
 ENDSSH
