@@ -152,24 +152,20 @@ pipeline {
             steps {
                 dir('frontend') {
                     script {
-                        // Load env-specific VITE variables for build-time injection
-                        def envFile = readFile("../env/.env.${params.TARGET_ENV}")
-                        def viteApiUrl = ''
-                        def viteEnv = ''
-                        envFile.split('\n').each { line ->
-                            if (line.startsWith('VITE_API_URL=')) {
-                                viteApiUrl = line.split('=', 2)[1]
-                            }
-                            if (line.startsWith('VITE_ENVIRONMENT=')) {
-                                viteEnv = line.split('=', 2)[1]
-                            }
-                        }
+                        // VITE vars per environment (public — baked into JS bundle)
+                        def viteConfig = [
+                            dev:  [apiUrl: 'https://dev.lamviec360.com',  env: 'development'],
+                            qa:   [apiUrl: 'https://qa.lamviec360.com',   env: 'qa'],
+                            uat:  [apiUrl: 'https://uat.lamviec360.com',  env: 'uat'],
+                            prod: [apiUrl: 'https://api.lamviec360.com',  env: 'production'],
+                        ]
+                        def cfg = viteConfig[params.TARGET_ENV] ?: viteConfig.dev
 
                         sh """
                             docker build \
                                 -f Dockerfile.prod \
-                                --build-arg VITE_API_URL=${viteApiUrl} \
-                                --build-arg VITE_ENVIRONMENT=${viteEnv} \
+                                --build-arg VITE_API_URL=${cfg.apiUrl} \
+                                --build-arg VITE_ENVIRONMENT=${cfg.env} \
                                 --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
                                 -t ${IMAGE_FULL} \
                                 -t ${IMAGE_LATEST} \
@@ -239,7 +235,7 @@ pipeline {
                             # Wait and verify
                             echo "Waiting for health check..."
                             sleep 5
-                            curl -f http://localhost:80/ || exit 1
+                            curl -f http://localhost:3080/ || exit 1
                             echo "Frontend deployment successful!"
 ENDSSH
                     """
