@@ -197,8 +197,8 @@ pipeline {
                             docker compose -f ${COMPOSE_FILE} up -d postgres redis
                             sleep 5
 
-                            # Start fastapi with the new image
-                            docker compose -f ${COMPOSE_FILE} up -d fastapi
+                            # Start fastapi and pg-backup with the new image
+                            docker compose -f ${COMPOSE_FILE} up -d fastapi pg-backup
 
                             # Wait for container to be ready
                             echo "Waiting for container to start..."
