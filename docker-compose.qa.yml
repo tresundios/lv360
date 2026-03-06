@@ -55,16 +55,13 @@ services:
     env_file:
       - ./env/.env.qa
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-lamviec360_qa}
-      POSTGRES_USER: ${POSTGRES_USER:-lv360_qa}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: Asia/Kolkata
     volumes:
       - lv360_pgdata_qa:/var/lib/postgresql/data
     networks:
       - lv360-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lv360_qa} -d ${POSTGRES_DB:-lamviec360_qa}"]
+      test: ["CMD-SHELL", "pg_isready -U lv360_qa -d lamviec360_qa"]
       interval: 5s
       timeout: 5s
       retries: 10
