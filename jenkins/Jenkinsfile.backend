@@ -76,6 +76,27 @@ pipeline {
                         returnStdout: true
                     ).trim()
                     echo "Building commit ${env.GIT_COMMIT_SHORT} on branch ${env.GIT_BRANCH_NAME}"
+
+                    // Path-based trigger: skip if no backend-relevant files changed
+                    def changedFiles = sh(
+                        script: 'git diff --name-only HEAD~1 HEAD || echo ""',
+                        returnStdout: true
+                    ).trim()
+                    echo "Changed files:\n${changedFiles}"
+
+                    def backendRelevant = changedFiles.split('\n').any { file ->
+                        file.startsWith('backend/') ||
+                        file.startsWith('docker-compose') ||
+                        file.startsWith('env/') ||
+                        file.startsWith('jenkins/Jenkinsfile.backend')
+                    }
+
+                    if (!backendRelevant && changedFiles != '') {
+                        echo "No backend-relevant files changed. Skipping pipeline."
+                        env.SKIP_PIPELINE = 'true'
+                    } else {
+                        env.SKIP_PIPELINE = 'false'
+                    }
                 }
             }
         }
@@ -85,7 +106,10 @@ pipeline {
         // ---------------------------------------------------------------------
         stage('Test') {
             when {
-                expression { return !params.SKIP_TESTS }
+                allOf {
+                    expression { return !params.SKIP_TESTS }
+                    expression { return env.SKIP_PIPELINE != 'true' }
+                }
             }
             steps {
                 dir('backend') {
@@ -119,6 +143,9 @@ pipeline {
         // Stage 3: Docker Build
         // ---------------------------------------------------------------------
         stage('Docker Build') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 dir('backend') {
                     sh """
@@ -138,6 +165,9 @@ pipeline {
         // Stage 4: Docker Push to Registry
         // ---------------------------------------------------------------------
         stage('Docker Push') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 withCredentials([
                     usernamePassword(
@@ -160,6 +190,9 @@ pipeline {
         // Stage 5: Deploy to Remote Server
         // ---------------------------------------------------------------------
         stage('Deploy') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
@@ -214,7 +247,10 @@ ENDSSH
         // ---------------------------------------------------------------------
         stage('Run Migrations') {
             when {
-                expression { return params.RUN_MIGRATIONS }
+                allOf {
+                    expression { return params.RUN_MIGRATIONS }
+                    expression { return env.SKIP_PIPELINE != 'true' }
+                }
             }
             steps {
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
@@ -233,6 +269,9 @@ ENDSSH
         // Stage 7: Health Check
         // ---------------------------------------------------------------------
         stage('Health Check') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """

@@ -69,6 +69,27 @@ pipeline {
                         returnStdout: true
                     ).trim()
                     echo "Building commit ${env.GIT_COMMIT_SHORT} on branch ${env.GIT_BRANCH_NAME}"
+
+                    // Path-based trigger: skip if no frontend-relevant files changed
+                    def changedFiles = sh(
+                        script: 'git diff --name-only HEAD~1 HEAD || echo ""',
+                        returnStdout: true
+                    ).trim()
+                    echo "Changed files:\n${changedFiles}"
+
+                    def frontendRelevant = changedFiles.split('\n').any { file ->
+                        file.startsWith('frontend/') ||
+                        file.startsWith('docker-compose') ||
+                        file.startsWith('env/') ||
+                        file.startsWith('jenkins/Jenkinsfile.frontend')
+                    }
+
+                    if (!frontendRelevant && changedFiles != '') {
+                        echo "No frontend-relevant files changed. Skipping pipeline."
+                        env.SKIP_PIPELINE = 'true'
+                    } else {
+                        env.SKIP_PIPELINE = 'false'
+                    }
                 }
             }
         }
@@ -77,6 +98,9 @@ pipeline {
         // Stage 2: Install & Lint
         // ---------------------------------------------------------------------
         stage('Install & Lint') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 dir('frontend') {
                     sh '''
@@ -95,7 +119,10 @@ pipeline {
         // ---------------------------------------------------------------------
         stage('Test') {
             when {
-                expression { return !params.SKIP_TESTS }
+                allOf {
+                    expression { return !params.SKIP_TESTS }
+                    expression { return env.SKIP_PIPELINE != 'true' }
+                }
             }
             steps {
                 dir('frontend') {
@@ -119,6 +146,9 @@ pipeline {
         // Stage 4: Docker Build
         // ---------------------------------------------------------------------
         stage('Docker Build') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 dir('frontend') {
                     script {
@@ -154,6 +184,9 @@ pipeline {
         // Stage 5: Docker Push to Registry
         // ---------------------------------------------------------------------
         stage('Docker Push') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 withCredentials([
                     usernamePassword(
@@ -176,6 +209,9 @@ pipeline {
         // Stage 6: Deploy to Remote Server
         // ---------------------------------------------------------------------
         stage('Deploy') {
+            when {
+                expression { return env.SKIP_PIPELINE != 'true' }
+            }
             steps {
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
@@ -183,11 +219,19 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
                             cd ${REMOTE_PROJECT_DIR}
 
+                            # Pull latest compose files and configs from git
+                            git pull origin ${params.TARGET_ENV} || true
+
                             # Pull new image
                             docker pull ${IMAGE_FULL}
 
                             # Update the env file with new image tag
                             sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
+
+                            # Export env vars so docker compose interpolation can read them
+                            set -a
+                            source env/.env.${params.TARGET_ENV}
+                            set +a
 
                             # Graceful rolling restart — only the react service
                             docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate react
