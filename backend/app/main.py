@@ -73,7 +73,7 @@ app.include_router(hello_router)
 
 @app.get("/")
 def root():
-    return {"message": "Lam Viec 360 - Task CRUD API - Jenkins Push Successfully done - Client Padu/Sathish"}
+    return {"message": "Lam Viec 360 - Task CRUD API - Jenkins Push Successfully done - Client Padu"}
 
 
 @app.get("/health")
