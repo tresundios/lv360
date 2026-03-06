@@ -234,8 +234,8 @@ pipeline {
                             docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} up -d postgres redis
                             sleep 5
 
-                            # Start fastapi and pg-backup with the new image
-                            docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} up -d fastapi pg-backup
+                            # Start fastapi, pg-backup, and react with the new image
+                            docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} up -d fastapi pg-backup react
 
                             # Wait for container to be ready
                             echo "Waiting for container to start..."
