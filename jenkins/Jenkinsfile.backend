@@ -94,10 +94,17 @@ pipeline {
                             -f Dockerfile.prod \
                             -t ${DOCKER_REPO}:test-${BUILD_NUMBER} .
 
-                        docker run --rm \
+                        # Run tests in a named container (not --rm) so we can copy results out
+                        docker run --name test-runner-${BUILD_NUMBER} \
                             --entrypoint "" \
                             ${DOCKER_REPO}:test-${BUILD_NUMBER} \
                             python -m pytest tests/ -v --tb=short --junitxml=/tmp/results.xml || true
+
+                        # Copy JUnit XML from container to workspace
+                        docker cp test-runner-${BUILD_NUMBER}:/tmp/results.xml ./results.xml || true
+
+                        # Clean up the test container
+                        docker rm test-runner-${BUILD_NUMBER} || true
                     '''
                 }
             }
@@ -166,8 +173,17 @@ pipeline {
                             # Update the env file with new image tag
                             sed -i 's|DOCKER_IMAGE_TAG=.*|DOCKER_IMAGE_TAG=${IMAGE_TAG}|' env/.env.${params.TARGET_ENV}
 
-                            # Stop existing containers to free ports
+                            # Stop ALL containers from this compose project
                             docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
+
+                            # Kill any rogue containers still binding required ports
+                            for PORT in 5432 8000 6379; do
+                                CONTAINER_ID=\$(docker ps -q --filter "publish=\${PORT}")
+                                if [ -n "\${CONTAINER_ID}" ]; then
+                                    echo "Killing rogue container on port \${PORT}: \${CONTAINER_ID}"
+                                    docker rm -f \${CONTAINER_ID} || true
+                                fi
+                            done
 
                             # Start supporting services (postgres, redis) then backend
                             docker compose -f ${COMPOSE_FILE} up -d postgres redis
