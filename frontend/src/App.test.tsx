@@ -14,11 +14,11 @@ describe("App", () => {
 
   it("renders the get started button", () => {
     render(<App />)
-    expect(screen.getByText("Get started Navis")).toBeInTheDocument()
+    expect(screen.getByText("Get started LamViec360 Padu")).toBeInTheDocument()
   })
 
   it("renders the learn more link", () => {
     render(<App />)
-    expect(screen.getByText("Learn more")).toBeInTheDocument()
+    expect(screen.getByText("Learn more - Rock on!")).toBeInTheDocument()
   })
 })
