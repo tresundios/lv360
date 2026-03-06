@@ -12,7 +12,7 @@ export function HomePage() {
       <div className="flex gap-4">
         <Button>Get started LamViec360 Padu</Button>
         <Button variant="outline" asChild>
-          <Link to="/about">Learn more</Link>
+          <Link to="/about">Learn more - Rock on!</Link>
         </Button>
       </div>
     </Content>
