@@ -167,6 +167,9 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
                             cd ${REMOTE_PROJECT_DIR}
 
+                            # Pull latest compose files and configs from git
+                            git pull origin ${params.TARGET_ENV} || true
+
                             # Pull new image
                             docker pull ${IMAGE_FULL}
 
