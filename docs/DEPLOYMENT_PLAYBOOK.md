@@ -15,6 +15,7 @@
 11. [Rollback Procedure](#11-rollback-procedure)
 12. [Troubleshooting](#12-troubleshooting)
 13. [Checklist](#13-checklist)
+14. [CI/CD Pipeline Fixes Reference](#14-cicd-pipeline-fixes-reference)
 
 ---
 
@@ -49,7 +50,7 @@
                                       └──────────────────────────────┘
 ```
 
-**Key insight:** The deploy server **never touches GitHub**. It only pulls Docker images from Docker Hub and runs them using `docker compose`.
+**Key insight:** The deploy server pulls Docker images from Docker Hub and runs them using `docker compose`. It also runs `git pull` to keep compose files and configs in sync with the repo.
 
 ---
 
@@ -67,13 +68,18 @@ GitHub sends webhook to Jenkins (jenkins.lamviec360.com/github-webhook/)
 Jenkins pipeline starts (Jenkinsfile.backend or Jenkinsfile.frontend)
         │
         ├── Stage 1: Checkout code FROM GITHUB (on Jenkins server)
-        ├── Stage 2: Run tests (on Jenkins server)
+        ├── Stage 2: Run tests in isolated Docker container (on Jenkins server)
+        │            └── Uses named container + docker cp to extract JUnit report
         ├── Stage 3: Docker build (on Jenkins server)
         ├── Stage 4: Docker push → Docker Hub (navistresundios/lamviec360-*)
         ├── Stage 5: SSH into deploy server (103.175.146.37)
+        │            └── git pull (sync compose files & configs)
         │            └── docker pull new image
-        │            └── docker compose up (restart service)
-        │            └── health check
+        │            └── source env file (export vars for Compose)
+        │            └── docker compose down + kill rogue containers
+        │            └── docker compose up (postgres, redis, fastapi, pg-backup)
+        ├── Stage 6: Run Alembic migrations via SSH
+        ├── Stage 7: Health check
         └── Done ✅
 ```
 
@@ -93,28 +99,26 @@ Jenkins pipeline starts (Jenkinsfile.backend or Jenkinsfile.frontend)
 
 ## 3. Do I Need to Clone the Repo on the Deploy Server?
 
-**NO.** You do NOT need to clone the full GitHub repo on the deploy server.
-
-The deploy server only needs **3 things**:
+**YES — a shallow clone is required.** The deploy server needs the repo so that Jenkins can `git pull` to keep compose files, scripts, and configs in sync.
 
 ```
-/opt/lamviec360/
+/opt/lamviec360/                ← git clone of the repo
 ├── docker-compose.dev.yml      ← tells Docker which images to run
 ├── env/
-│   └── .env.dev                ← environment variables (passwords, URLs, etc.)
+│   └── .env.dev                ← environment variables (passwords, URLs, etc.) — gitignored
 └── backend/
     └── scripts/
-        └── backup.sh           ← (optional) for pg-backup service
+        └── backup.sh           ← mounted into pg-backup container
 ```
 
-These files are **copied once** during initial setup (see Section 6). After that, Jenkins SSHes in and runs `docker pull` + `docker compose up` — no git needed.
+The Jenkins deploy stage runs `git pull origin dev` on the deploy server before every deployment. This ensures compose files, backup scripts, and other configs are always up to date.
 
-### Why not clone?
+### Why clone?
 
-- The deploy server doesn't compile or build anything
-- Docker images are pre-built on Jenkins and stored in Docker Hub
-- Fewer dependencies = more secure deploy server
-- No need for git, node, python, etc. on the deploy server
+- Compose files (`docker-compose.dev.yml`) and scripts (`backup.sh`) may change between deploys
+- Without `git pull`, the deploy server would run stale configs even after code changes
+- The `env/` directory is **gitignored** — secrets are safe and must be configured manually once (see Section 6.5)
+- The deploy server still doesn't compile or build anything — Docker images are pre-built on Jenkins
 
 ---
 
@@ -201,35 +205,35 @@ chmod 600 /home/deploy/.ssh/authorized_keys
 chown -R deploy:deploy /home/deploy/.ssh
 ```
 
-### 6.3 Create project directory and required files
+### 6.3 Clone the repository
 
 ```bash
-# Create directory
-mkdir -p /opt/lamviec360/env
-mkdir -p /opt/lamviec360/backend/scripts
-chown -R deploy:deploy /opt/lamviec360
+# Install git if not present
+apt install -y git
+
+# Clone the repo
+su - deploy
+git clone https://github.com/tresundios/lv360.git /opt/lamviec360
+cd /opt/lamviec360
+git checkout dev
 ```
 
-### 6.4 Copy the 3 required files
+### 6.4 Create the env file
 
-From your **local machine** (Mac), copy the files to the deploy server:
+The `env/` directory is gitignored, so you need to create it manually:
+
+```bash
+mkdir -p /opt/lamviec360/env
+```
+
+From your **local machine** (Mac), copy the env file to the deploy server:
 
 ```bash
 # From your Mac, in the project root
-scp docker-compose.dev.yml root@103.175.146.37:/opt/lamviec360/
-scp env/.env.dev root@103.175.146.37:/opt/lamviec360/env/
+scp env/.env.dev deploy@103.175.146.37:/opt/lamviec360/env/
 ```
 
-Or create them manually on the server. The critical file is `docker-compose.dev.yml` which references the Docker Hub images:
-
-```yaml
-# Key lines in docker-compose.dev.yml:
-services:
-  fastapi:
-    image: docker.io/navistresundios/lamviec360-backend:${DOCKER_IMAGE_TAG:-dev-latest}
-  react:
-    image: docker.io/navistresundios/lamviec360-frontend:${DOCKER_IMAGE_TAG:-dev-latest}
-```
+Or create it manually on the server using `env/.env.example` as a template.
 
 ### 6.5 Edit env/.env.dev with REAL passwords
 
@@ -239,9 +243,20 @@ nano /opt/lamviec360/env/.env.dev
 ```
 
 **Change these values** (do NOT use the defaults in production/dev):
-- `POSTGRES_PASSWORD` → a strong random password
+- `POSTGRES_PASSWORD` → a strong random password (**must be URL-safe**, no `@`, `!`, `#` characters)
 - `JWT_SECRET` → a strong random string
 - `DOCKER_IMAGE_TAG` → leave as `dev-latest` initially
+- `DATABASE_URL` → must use the **same password** as `POSTGRES_PASSWORD`
+
+Generate secure values:
+
+```bash
+# Generate URL-safe password and JWT secret
+python3 -c "import secrets; print('POSTGRES_PASSWORD=' + secrets.token_urlsafe(20))"
+python3 -c "import secrets; print('JWT_SECRET=' + secrets.token_urlsafe(32))"
+```
+
+> **Important:** The `POSTGRES_PASSWORD` in `DATABASE_URL` must match exactly. If the password contains special characters like `@`, it will break the URL parsing in SQLAlchemy.
 
 ### 6.6 Set up Nginx reverse proxy
 
@@ -552,6 +567,91 @@ docker compose -f docker-compose.dev.yml exec fastapi alembic upgrade head
 docker compose -f docker-compose.dev.yml logs fastapi
 ```
 
+### POSTGRES_PASSWORD warning: "variable is not set"
+
+This means Docker Compose cannot resolve `${POSTGRES_PASSWORD}` during interpolation.
+
+**Root cause:** `${VAR}` in the `environment:` block of a compose file is resolved by Compose from the **shell environment**, NOT from `env_file`. The `env_file` directive only injects variables into the container at runtime.
+
+**Fix:** Either:
+1. Remove `${POSTGRES_PASSWORD}` from the `environment:` block and let `env_file` handle it (preferred)
+2. Export the variable to the shell before running compose: `set -a; source env/.env.dev; set +a`
+
+The Jenkinsfile deploy stage already does option 2 for `DOCKER_IMAGE_TAG`.
+
+### Port already allocated (5432, 8000, 6379)
+
+This means a Docker container from a previous run is still bound to the port.
+
+```bash
+# Find and kill the container using port 5432
+docker ps -q --filter "publish=5432" | xargs -r docker rm -f
+
+# Or kill all containers on common ports
+for PORT in 5432 8000 6379; do
+    docker rm -f $(docker ps -q --filter "publish=${PORT}") 2>/dev/null || true
+done
+```
+
+The Jenkinsfile deploy stage handles this automatically.
+
+### Postgres container unhealthy after deploy
+
+Usually caused by the Postgres data volume being initialized with a wrong/blank password.
+
+```bash
+# On deploy server — wipe and reinitialize
+cd /opt/lamviec360
+docker compose -f docker-compose.dev.yml down
+docker volume rm lv360_pgdata_dev
+
+# Verify env file has POSTGRES_PASSWORD set
+grep POSTGRES_PASSWORD env/.env.dev
+
+# Restart
+set -a; source env/.env.dev; set +a
+docker compose -f docker-compose.dev.yml up -d postgres redis
+docker compose -f docker-compose.dev.yml logs -f postgres
+```
+
+> **Warning:** This deletes all database data. Only do this if the DB is corrupted or freshly set up. For existing environments, investigate the root cause first.
+
+### Tests fail with "could not translate host name postgres"
+
+The test container runs in isolation without a Postgres service. Tests must mock all DB connections.
+
+**Fix in `tests/test_hello.py`:**
+- Use `app.dependency_overrides[get_db]` instead of `@patch("app.database.get_db")`
+- Patch lifespan functions: `wait_for_db`, `Base`, `seed_hello_world`
+
+### JUnit report not found in Jenkins
+
+The test container writes `/tmp/results.xml` inside the container. If using `--rm`, the file is lost.
+
+**Fix:** Use a named container, then `docker cp` the file out:
+```bash
+docker run --name test-runner-${BUILD_NUMBER} ...
+docker cp test-runner-${BUILD_NUMBER}:/tmp/results.xml ./results.xml
+docker rm test-runner-${BUILD_NUMBER}
+```
+
+### Deploy server has stale compose files
+
+If changes to `docker-compose.dev.yml` aren't taking effect on the deploy server:
+
+```bash
+# On deploy server
+cd /opt/lamviec360
+git pull origin dev
+```
+
+The Jenkinsfile deploy stage runs `git pull` automatically. If this still fails, manually SCP the file:
+
+```bash
+# From local machine
+scp docker-compose.dev.yml deploy@103.175.146.37:/opt/lamviec360/
+```
+
 ---
 
 ## 13. Checklist
@@ -600,3 +700,86 @@ docker compose -f docker-compose.dev.yml logs fastapi
 - [ ] `https://dev.lamviec360.com/health` returns OK
 - [ ] `https://dev.lamviec360.com/docs` shows FastAPI docs
 - [ ] `https://appdev.lamviec360.com` loads the React app
+- [ ] pg-backup container is running (`docker ps | grep pgbackup`)
+- [ ] Postgres data persists across redeploys
+
+---
+
+## 14. CI/CD Pipeline Fixes Reference
+
+This section documents all the pipeline issues encountered and their fixes. Use it as a reference when debugging future failures.
+
+### 14.1 Test Stage Fixes
+
+| Issue | Root Cause | Fix |
+|-------|-----------|-----|
+| Tests hang forever | Entrypoint script (`entrypoint.sh`) waits for DB connection | Override entrypoint: `docker run --entrypoint ""` |
+| `tests/ directory not found` | Tests not included in Docker image | Added `COPY ./tests ./tests` to `Dockerfile.prod` |
+| `could not translate host name "postgres"` | Tests tried to connect to real DB via lifespan functions | Used `app.dependency_overrides[get_db]` + patched `wait_for_db`, `Base`, `seed_hello_world` in test fixtures |
+| JUnit report not found | `--rm` flag deletes container before report can be read | Use named container + `docker cp` to extract `results.xml` |
+
+### 14.2 Deploy Stage Fixes
+
+| Issue | Root Cause | Fix |
+|-------|-----------|-----|
+| `Bind for 0.0.0.0:8000 failed` | Previous containers still running on the port | Added `docker compose down --remove-orphans` before starting services |
+| `Bind for 0.0.0.0:5432 failed` | Rogue containers from previous deploys/other projects | Added loop to kill containers on ports 5432, 8000, 6379 before `compose up` |
+| `frontend:dev-latest not found` | `docker compose up -d` tries to pull ALL services including frontend | Start only needed services: `docker compose up -d postgres redis fastapi pg-backup` |
+| `POSTGRES_PASSWORD is not set` | `${POSTGRES_PASSWORD}` in compose `environment:` block reads from shell, not `env_file` | Removed Compose interpolation from postgres service; added `set -a; source env/.env.dev; set +a` in deploy script |
+| Postgres container unhealthy | Data volume initialized with blank password | Wiped volume (`docker volume rm lv360_pgdata_dev`) and redeployed |
+| Stale compose files on server | Jenkinsfile only pulled Docker image, never updated configs | Added `git pull origin ${TARGET_ENV}` in deploy stage |
+| pg-backup not running | Service not included in `docker compose up` command | Added `pg-backup` to the deploy command |
+| `PGPASSWORD` missing for pg-backup | Removed during Compose interpolation cleanup | Restored `PGPASSWORD: ${POSTGRES_PASSWORD}` (works because `source env/.env.dev` exports it) |
+
+### 14.3 Environment & Config Fixes
+
+| Issue | Root Cause | Fix |
+|-------|-----------|-----|
+| `POSTGRES_PASSWORD` warning persists | `env_file` only passes vars into container; Compose `${VAR}` reads from shell | For postgres service: removed `${POSTGRES_PASSWORD}` from `environment:` block (use `env_file` only). For pg-backup: kept `${POSTGRES_PASSWORD}` but deploy script sources env file first |
+| Password breaks `DATABASE_URL` | Special characters (`@`, `!`) in password break URL parsing | Use URL-safe passwords only (generated via `secrets.token_urlsafe()`) |
+| Changes not deployed | Code pushed to feature branch, not merged to `dev` | Always merge to `dev` before expecting Jenkins to pick up changes |
+
+### 14.4 How Docker Compose Environment Variables Work
+
+This is the key concept that caused the most issues:
+
+```yaml
+services:
+  postgres:
+    env_file:
+      - ./env/.env.dev          # (A) Injects vars INTO the container at runtime
+    environment:
+      POSTGRES_PASSWORD: ${VAR}  # (B) Compose resolves ${VAR} from SHELL before container starts
+```
+
+- **(A) `env_file`** — Variables are passed into the container's environment. The container can read them. Compose itself does NOT see them.
+- **(B) `environment` with `${VAR}`** — Compose resolves `${VAR}` from the **host shell environment** or a `.env` file in the project root. If the variable isn't exported in the shell, Compose shows a warning.
+
+**Our solution:**
+- For the `postgres` service: removed `${POSTGRES_PASSWORD}` from `environment:` — `env_file` provides it directly to the container
+- For `pg-backup`: kept `PGPASSWORD: ${POSTGRES_PASSWORD}` because `pg_dump` needs `PGPASSWORD` (different var name), and the deploy script runs `set -a; source env/.env.dev; set +a` to export all vars to the shell first
+- For `DOCKER_IMAGE_TAG`: kept `${DOCKER_IMAGE_TAG:-dev-latest}` in the image tag since the deploy script exports it via `source`
+
+### 14.5 Database Persistence
+
+The Postgres database is **NOT reinstalled** on every deploy:
+
+- Data lives in Docker named volume `lv360_pgdata_dev`
+- `docker compose down` removes containers but **NOT** volumes
+- `docker compose up` creates new containers that mount the **existing** volume
+- Postgres initialization (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`) only runs on **first start** when the volume is empty
+- Schema changes are handled by **Alembic migrations** (non-destructive)
+
+**When data IS lost:**
+- `docker volume rm lv360_pgdata_dev` (explicit volume deletion)
+- `docker compose down -v` (the `-v` flag removes volumes)
+
+### 14.6 Backup Service
+
+The `pg-backup` service runs inside a `postgres:15-alpine` container:
+
+- **Schedule:** Daily at 02:30 AM IST
+- **Method:** `pg_dump` → gzip → `/data/postgres-backups-dev/` on host
+- **Retention:** 30 days (auto-deletes older backups)
+- **Auth:** Uses `PGPASSWORD` env var (provided via Compose interpolation)
+- **Script:** `backend/scripts/backup.sh` (mounted read-only into the container)
