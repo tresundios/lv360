@@ -237,8 +237,8 @@ DOCKERFILE
 
                             # Wait and verify
                             echo "Waiting for health check..."
-                            sleep 5
-                            curl -f http://localhost:3080/ || exit 1
+                            # Wait for container to be healthy with retry
+                            timeout 60 bash -c 'until curl -f http://localhost:3080/ >/dev/null 2>&1; do sleep 2; done'
                             echo "Frontend deployment successful!"
 ENDSSH
                     """
