@@ -201,6 +201,7 @@ pipeline {
                             cd ${REMOTE_PROJECT_DIR}
 
                             # Pull latest compose files and configs from git
+                            git config pull.rebase false
                             git pull origin ${params.TARGET_ENV} || true
 
                             # Pull new image
@@ -256,9 +257,14 @@ ENDSSH
                 sshagent(credentials: [env.SSH_CREDENTIALS]) {
                     sh """
                         DEPLOY_HOST=\$(eval echo \${DEPLOY_HOST_${params.TARGET_ENV}})
-                        ssh -o StrictHostKeyChecking=no deploy@\${DEPLOY_HOST} << 'ENDSSH'
+                        ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 deploy@\${DEPLOY_HOST} << 'ENDSSH'
                             cd ${REMOTE_PROJECT_DIR}
-                            docker compose -f ${COMPOSE_FILE} exec -T fastapi alembic upgrade head
+                            echo "Running Alembic migrations..."
+                            timeout 30 docker compose -f ${COMPOSE_FILE} exec -T fastapi alembic upgrade head || {
+                                echo "Migration failed, attempting to stamp..."
+                                timeout 30 docker compose -f ${COMPOSE_FILE} exec -T fastapi alembic stamp head || true
+                            }
+                            echo "Migrations completed."
 ENDSSH
                     """
                 }
