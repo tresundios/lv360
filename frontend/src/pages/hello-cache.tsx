@@ -32,9 +32,7 @@ export function HelloCachePage() {
           {isLoading && (
             <div className="flex items-center gap-2">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-              <span className="text-muted-foreground">
-                Checking cache…
-              </span>
+              <span className="text-muted-foreground">Checking cache…</span>
             </div>
           )}
 

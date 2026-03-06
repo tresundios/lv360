@@ -13,7 +13,6 @@ export function HomePage() {
         <Button>Get started Navis</Button>
         <Button variant="outline" asChild>
           <Link to="/about">Learn more</Link>
-         
         </Button>
       </div>
     </Content>
