@@ -219,7 +219,7 @@ pipeline {
                             set +a
 
                             # Stop ALL containers from this compose project
-                            docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
+                            docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} down --remove-orphans || true
 
                             # Kill any rogue containers still binding required ports
                             for PORT in 5432 8000 6379; do
@@ -231,11 +231,11 @@ pipeline {
                             done
 
                             # Start supporting services (postgres, redis) then backend
-                            docker compose -f ${COMPOSE_FILE} up -d postgres redis
+                            docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} up -d postgres redis
                             sleep 5
 
                             # Start fastapi and pg-backup with the new image
-                            docker compose -f ${COMPOSE_FILE} up -d fastapi pg-backup
+                            docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} up -d fastapi pg-backup
 
                             # Wait for container to be ready
                             echo "Waiting for container to start..."
@@ -265,7 +265,7 @@ ENDSSH
                             cd ${REMOTE_PROJECT_DIR}
                             echo "Waiting for FastAPI container to start and run migrations..."
                             # Wait for container to be healthy (migrations run during startup)
-                            timeout 120 bash -c 'until docker compose -f ${COMPOSE_FILE} ps fastapi | grep -q "healthy"; do sleep 3; done'
+                            timeout 120 bash -c 'until docker compose --env-file env/.env.${params.TARGET_ENV} -f ${COMPOSE_FILE} ps fastapi | grep -q "healthy"; do sleep 3; done'
                             echo "FastAPI container is healthy - migrations completed."
 ENDSSH
                     """
