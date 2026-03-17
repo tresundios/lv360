@@ -112,7 +112,6 @@ services:
       - ./env/.env.dev
     environment:
       TZ: Asia/Kolkata
-      PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - /data/postgres-backups-dev:/backups
       - ./backend/scripts/backup.sh:/backup.sh:ro
